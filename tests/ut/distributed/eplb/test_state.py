@@ -467,3 +467,71 @@ def test_failed_shared_session_exits_from_foreground_before_reusing_resources(en
     assert fatal.value.__cause__ is error
     assert state._hixl_session is session
     session.close.assert_not_called()
+
+
+def _layer_state_stub():
+    layer_state = AscendEplbLayerState.__new__(AscendEplbLayerState)
+    layer_state.refresh_expert_replica_routing_table = MagicMock()
+    return layer_state
+
+
+def _committed_model_state(physical_map):
+    layer_state = _layer_state_stub()
+    return SimpleNamespace(
+        physical_to_logical_map=physical_map,
+        model=SimpleNamespace(moe_layers=[SimpleNamespace(eplb_state=layer_state)]),
+        _load_mapping_generation=0,
+    )
+
+
+def test_refresh_routing_tables_advances_generation_for_each_committed_layer():
+    model_state = _committed_model_state(torch.tensor([[0, 1, 2, 3]], dtype=torch.int32))
+
+    # Callers refresh because the placement changed, so each refresh invalidates
+    # the samples recorded before it without reading the device-side map.
+    eplb_state.refresh_model_routing_tables(model_state)
+    assert model_state._load_mapping_generation == 1
+
+    eplb_state.refresh_model_routing_tables(model_state, layer_idx=0)
+    assert model_state._load_mapping_generation == 2
+
+
+def test_refresh_routing_tables_tracks_generation_without_prior_state():
+    model_state = _committed_model_state(torch.tensor([[0, 1, 2, 3]], dtype=torch.int32))
+    del model_state._load_mapping_generation
+
+    eplb_state.refresh_model_routing_tables(model_state)
+
+    assert model_state._load_mapping_generation == 1
+
+
+def test_step_discards_samples_recorded_before_a_committed_placement_change():
+    state = AscendEplbState.__new__(AscendEplbState)
+    state._hixl_session = None
+    state._close_error = None
+    # The policy's temporal statistics hook is what enables the custom window.
+    state.policy = SimpleNamespace(prepare_local_load_stats=lambda *_: None)
+    state.expert_load_window_size = 4
+    state.expert_load_window_step = 0
+    state._local_load_collection_mask = torch.ones(4, dtype=torch.int32)
+    state._physical_load_sample_slots = torch.arange(4, dtype=torch.long)
+    state._num_recorded_load_steps = 4
+    state._load_stats_window_start_index = 1
+    state._load_stats_window_write_index = 2
+
+    model_state = _committed_model_state(torch.tensor([[0, 1, 2, 3]], dtype=torch.int32))
+    model_state._observed_load_mapping_generation = 0
+    state.model_states = {"target": model_state}
+
+    with patch.object(upstream_eplb_state.EplbState, "step", MagicMock()):
+        state.step()
+        # Nothing changed yet, so the collected samples stay available.
+        assert state._num_recorded_load_steps == 4
+
+        # Commit a new placement, then step again.
+        eplb_state.refresh_model_routing_tables(model_state)
+        state.step()
+
+    assert not state._local_load_collection_mask.any()
+    assert torch.equal(state._physical_load_sample_slots, torch.full((4,), -1, dtype=torch.long))
+    assert model_state._observed_load_mapping_generation == model_state._load_mapping_generation

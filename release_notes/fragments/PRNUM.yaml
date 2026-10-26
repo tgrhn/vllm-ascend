@@ -1,0 +1,9 @@
+pr: PRNUM
+entries:
+  - category: bugfix
+    text: >-
+      Discard expert-load samples recorded before a committed placement change
+      on all hardware. Window counters are keyed by physical slot, so samples
+      taken under the previous placement were folded into whichever logical
+      expert now occupies the slot, hiding real imbalance from the next planning
+      cycle.

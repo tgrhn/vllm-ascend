@@ -130,6 +130,26 @@ def refresh_model_routing_tables(
         layer_state = layer.eplb_state
         if isinstance(layer_state, AscendEplbLayerState):
             layer_state.refresh_expert_replica_routing_table()
+    _advance_load_mapping_generation(model_state)
+
+
+def _advance_load_mapping_generation(model_state: Any) -> None:
+    """Mark load samples recorded before this placement as stale.
+
+    Window counters are keyed by physical slot. A commit can move a different
+    logical expert into a slot, so samples recorded under the previous placement
+    would be folded into the wrong logical expert by
+    ``_map_physical_stats_to_logical``. Advancing the generation lets
+    ``_discard_samples_from_old_mapping`` drop them on the next step.
+
+    Every caller refreshes the tables because the placement changed, so the
+    generation advances without comparing maps: ``physical_to_logical_map`` lives
+    on the device, and comparing it would add a host synchronization to each
+    per-layer commit. Only the policy-prepared statistics path consumes this
+    generation; the upstream window read by the default policy has no discard
+    hook, and emptying it there would leave that policy planning on no samples.
+    """
+    model_state._load_mapping_generation = getattr(model_state, "_load_mapping_generation", 0) + 1
 
 
 def _raise_if_async_worker_stopped(state: Any) -> None:
