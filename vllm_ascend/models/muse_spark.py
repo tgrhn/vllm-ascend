@@ -40,7 +40,7 @@ is declared in this model's packed-module mapping so the scheme lookup can
 resolve it from the four tensors the checkpoint keeps separate. The other
 quantization configs, EPLB, sequence-parallel MoE, data or prefill context
 parallelism without expert parallelism, and the DSpark draft are not
-supported yet.
+supported yet; ``muse_spark_dspark`` makes the draft fail at load time.
 """
 
 from collections.abc import Callable

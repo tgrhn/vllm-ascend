@@ -67,6 +67,11 @@ def register_model():
             "MuseSparkForConditionalGeneration",
             "vllm_ascend.models.muse_spark:AscendMuseSparkForConditionalGeneration",
         )
+        # Upstream's draft runs CUDA/ROCm-only layers; this one refuses to load.
+        ModelRegistry.register_model(
+            "MuseSparkDSparkModel",
+            "vllm_ascend.models.muse_spark_dspark:AscendMuseSparkDSparkForCausalLM",
+        )
     ModelRegistry.register_model("DeepSeekV4MTPModel", "vllm_ascend.models.deepseek_v4.mtp:DeepSeekV4MTP")
     ModelRegistry.register_model(
         "DSparkDraftModel",

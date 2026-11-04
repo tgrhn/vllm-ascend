@@ -19,12 +19,14 @@ pytest.importorskip("vllm.models.muse_spark.amd.model", reason="vLLM without Mus
 import vllm.models.muse_spark.common.layers as upstream_layers  # noqa: E402
 from vllm.distributed import parallel_state  # noqa: E402
 from vllm.models.muse_spark.amd.model import MuseSpark1xAttention  # noqa: E402
+from vllm.models.muse_spark.common.dspark import MuseSparkDSparkForCausalLM  # noqa: E402
 from vllm.models.muse_spark.common.layers import (  # noqa: E402
     MuseSpark1xRMSNorm,
     MuseSpark1xRMSNormWithInputScale,
 )
 
 import vllm_ascend.models.muse_spark as muse_spark  # noqa: E402
+import vllm_ascend.models.muse_spark_dspark as muse_spark_dspark  # noqa: E402
 from vllm_ascend import models  # noqa: E402
 from vllm_ascend.ops.fused_moe.fused_moe import AscendMoERunner  # noqa: E402
 
@@ -61,6 +63,26 @@ def test_registration_is_skipped_without_upstream_package():
 
     assert "MuseSpark1xForCausalLM" not in registered
     assert "MuseSparkForConditionalGeneration" not in registered
+    assert "MuseSparkDSparkModel" not in registered
+
+
+def test_dspark_draft_is_registered_to_the_ascend_guard():
+    """Upstream registers the draft too; Ascend takes its place."""
+    registered = _registered_architectures()
+
+    assert registered["MuseSparkDSparkModel"] == "vllm_ascend.models.muse_spark_dspark:AscendMuseSparkDSparkForCausalLM"
+
+
+def test_dspark_draft_fails_at_load_time_with_a_clear_error():
+    """Upstream's draft layers reach CUDA-only kernels, so the draft is refused
+    when it is built rather than on the first draft step."""
+    guard = muse_spark_dspark.AscendMuseSparkDSparkForCausalLM
+    # The upstream interfaces stay, so the registry inspects it as the draft.
+    assert issubclass(guard, MuseSparkDSparkForCausalLM)
+    draft = object.__new__(guard)
+
+    with pytest.raises(NotImplementedError, match="DSpark draft is not supported on Ascend"):
+        guard.__init__(draft, vllm_config=SimpleNamespace())
 
 
 def _post_expert_norm(hidden_size: int) -> nn.Module:
