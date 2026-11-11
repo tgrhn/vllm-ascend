@@ -114,7 +114,7 @@ private:
                                          ConstInfo& qsfaConstInfo);
     __aicore__ inline uint32_t CopyInKvHoisted(LocalTensor<KV_T> kvInUb, int64_t startRow, int64_t token0Idx,
                                                int64_t token1Idx, const RunInfo& info, ConstInfo& ci,
-                                               DataCopyExtParams& params, const DataCopyPadExtParams<int8_t>& padding);
+                                               DataCopyExtParams& params, const DataCopyPadExtParams<KV_T>& padding);
     __aicore__ inline void ProcessVec1SoftmaxDispatchQSFA(LocalTensor<Q_T> &stage1CastTensor,
         LocalTensor<T> &mmRes, LocalTensor<float> &sumUb, LocalTensor<float> &maxUb,
         LocalTensor<T> &apiTmpBuffer, RunInfo &runInfo, ConstInfo &constInfo);
@@ -276,7 +276,7 @@ QSFAVectorService<TEMPLATE_ARGS>::CopyInSingleKv(LocalTensor<KV_T> kvInUb, int64
 
 TEMPLATES_DEF_NO_DEFAULT __aicore__ inline uint32_t QSFAVectorService<TEMPLATE_ARGS>::CopyInKvHoisted(
     LocalTensor<KV_T> kvInUb, int64_t startRow, int64_t token0Idx, int64_t token1Idx, const RunInfo& info,
-    ConstInfo& ci, DataCopyExtParams& params, const DataCopyPadExtParams<int8_t>& padding)
+    ConstInfo& ci, DataCopyExtParams& params, const DataCopyPadExtParams<KV_T>& padding)
 {
     constexpr uint32_t packedBytes = NO_ROPE ? 528 : 656;
     constexpr uint32_t packedStride = NO_ROPE ? 544 : 672;
@@ -602,7 +602,14 @@ __aicore__ inline void QSFAVectorService<TEMPLATE_ARGS>::ProcessSparseKv(
     int64_t s2LoopOffset = qsfaRunInfo.s2LoopCount * qsfaConstInfo.s2BaseSize;
     int64_t maxDealRow = Min(16, qsfaSparseCalSize);
     DataCopyExtParams kvParams{1, NO_ROPE ? 528U : 656U, 0, 0, 0};
-    DataCopyPadExtParams<int8_t> kvPadding{true, 0, 16, 0};
+    // The pad parameters carry the destination element type. Fields are
+    // assigned individually, as in CopyInSingleKv, so the padding value
+    // converts the same way for every supported KV type.
+    DataCopyPadExtParams<KV_T> kvPadding;
+    kvPadding.isPad = true;
+    kvPadding.leftPadding = 0;
+    kvPadding.rightPadding = 16;
+    kvPadding.paddingValue = 0;
 
     // 处理一个s2的base块
     while ((s2 < sparseS2End) && !meetEnd) { // 拷贝到s2End或者遇到-1
@@ -620,7 +627,12 @@ __aicore__ inline void QSFAVectorService<TEMPLATE_ARGS>::ProcessSparseKv(
                 meetEnd = true;
                 break;
             }
-            if constexpr (IsSameType<KV_T, int8_t>::value && !IS_VEC_S2PHYADDR) {
+            // The hoisted copy-in reads packed rows by byte offset and writes
+            // them at the compile-time row pitch, which holds for every 1-byte
+            // KV type (INT8, FP8_E4M3FN, HIFLOAT8). It was first enabled for
+            // INT8 only; FP8 checkpoints took the generic path and paid the
+            // per-pair parameter setup.
+            if constexpr (sizeof(KV_T) == 1 && !IS_VEC_S2PHYADDR) {
                 if (qsfaConstInfo.sparseBlockSize == 1) {
                     dealRow += CopyInKvHoisted(kvInUb, dealRow, token0Idx, token1Idx, qsfaRunInfo, qsfaConstInfo,
                                                kvParams, kvPadding);
