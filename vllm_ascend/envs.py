@@ -72,6 +72,14 @@ env_variables: dict[str, Callable[[], Any]] = {
     # Control the aclrtMemcpyBatchAsync compile path for KV cache offloading.
     # "1": force enable, "0": force disable, None: auto-detect from CANN headers.
     "VLLM_ASCEND_ENABLE_BATCH_MEMCPY": lambda: os.getenv("VLLM_ASCEND_ENABLE_BATCH_MEMCPY", None),
+    # Route quantized sparse flash attention to this repository's
+    # KvQuantSparseFlashAttentionVllm operator instead of the CANN built-in one
+    # on A5, including the RoPE64 decode shapes that default to the built-in.
+    # Both operators compute the same attention; they differ in how they gather
+    # the selected KV rows, so this exists to A/B that gather on one build.
+    # "1": always use the repository operator, "0" (default): keep the current
+    # per-shape routing.
+    "VLLM_ASCEND_QSFA_USE_CUSTOM_OP": lambda: bool(int(os.getenv("VLLM_ASCEND_QSFA_USE_CUSTOM_OP", "0"))),
 }
 
 # end-env-vars-definition

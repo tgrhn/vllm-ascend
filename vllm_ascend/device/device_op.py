@@ -25,6 +25,7 @@ import torch.nn.functional as F
 import torch_npu
 from vllm.triton_utils import HAS_TRITON
 
+from vllm_ascend import envs
 from vllm_ascend.device import utils as device_utils
 from vllm_ascend.device.hardware_profile import DeviceAdaptorFamily, HardwareCapability, get_current_hardware_profile
 from vllm_ascend.device.paged_mla_cache_read import try_load_strided_mla_cache
@@ -1103,13 +1104,16 @@ class A5DeviceAdaptor(BaseDeviceAdaptor):
         return_lse: bool = False,
     ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         qk_rope_head_dim = getattr(sfa_impl, "qk_rope_head_dim", 0 if q_pe is None else q_pe.shape[-1])
-        if return_lse or qk_rope_head_dim == 0:
+        if return_lse or qk_rope_head_dim == 0 or envs.VLLM_ASCEND_QSFA_USE_CUSTOM_OP:
             # RoPE0 packed C8 is implemented by the vllm-ascend custom operator
             # (csrc/attention/kv_quant_sparse_flash_attention_vllm). The torch_npu
             # built-in aclnn op has no RoPE0 contract: it sizes its outputs from
             # rope_head_dim=64 and faults while registering them. Route RoPE0 to
             # the custom operator. LSE requests also require the custom operator;
-            # keep RoPE64 without LSE on the built-in one.
+            # keep RoPE64 without LSE on the built-in one unless
+            # VLLM_ASCEND_QSFA_USE_CUSTOM_OP asks for the custom operator
+            # everywhere, which is how the two KV-gather implementations are
+            # compared on one build.
             return BaseDeviceAdaptor._execute_kv_quant_sparse_flash_attention_vllm(
                 sfa_impl,
                 ql_nope,
