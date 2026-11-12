@@ -393,6 +393,30 @@ class TestAscendW8A8MXFP8MoEMethod(TestBase):
 
     @patch("vllm_ascend.quantization.methods.w8a8.w8a8_mxfp8.get_current_vllm_config")
     @patch("vllm_ascend.quantization.methods.w8a8.w8a8_mxfp8.use_cann_megamoe", return_value=False)
+    @patch("vllm_ascend.utils._should_trans_nz", return_value=True)
+    def test_eplb_weight_views_stay_flattenable_under_nz(self, mock_should_trans_nz, mock_use_cann_megamoe, mock_vllm):
+        # NZ leaves every stored tensor contiguous, so transposing one here is
+        # what would spread an expert row across two subspaces and break the
+        # copy-free view(local_num_experts, -1) that EPLB flattens it with.
+        layer = create_mxfp_moe_layer(
+            num_experts=self.num_experts, hidden_size=self.hidden_size, intermediate_size=self.intermediate_size
+        )
+        self.scheme.process_weights_after_loading(layer)
+
+        weight_views = self.scheme.get_eplb_weight_views(layer)
+
+        self.assertEqual(len(weight_views), 4)
+        for source, weight_view in zip(
+            [layer.w13_weight, layer.w2_weight, layer.w13_weight_scale, layer.w2_weight_scale],
+            weight_views,
+        ):
+            self.assertEqual(weight_view.shape[0], self.num_experts)
+            self.assertEqual(weight_view.untyped_storage().data_ptr(), source.untyped_storage().data_ptr())
+            flattened = weight_view.view(self.num_experts, -1)
+            self.assertEqual(flattened.numel(), source.numel())
+
+    @patch("vllm_ascend.quantization.methods.w8a8.w8a8_mxfp8.get_current_vllm_config")
+    @patch("vllm_ascend.quantization.methods.w8a8.w8a8_mxfp8.use_cann_megamoe", return_value=False)
     def test_moe_buffer_data_ptr_stable_across_reloads(self, mock_use_cann_megamoe, mock_vllm):
         for nz_enabled in (False, True):
             with (

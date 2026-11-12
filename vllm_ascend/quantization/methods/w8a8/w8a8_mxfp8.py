@@ -276,6 +276,20 @@ class AscendW8A8MXFP8DynamicLinearMethod(AscendLinearScheme):
         layer._mxfp8_transformed = False
 
 
+def _flattenable_expert_view(tensor: torch.Tensor) -> torch.Tensor:
+    """Return an expert-first view EPLB can flatten without copying a row.
+
+    ``process_weights_after_loading`` leaves every MoE weight and scale in
+    ``(g, k, n)``, but how it leaves it there depends on NZ:
+    ``maybe_trans_nz_with_scale`` keeps a bare transposed view over the
+    ``(g, n, k)`` buffer when NZ does not apply, and makes the tensor
+    contiguous before the format cast when it does. Transposing is therefore
+    what restores a flattenable expert row in the first case and what breaks
+    it in the second, so apply it only where the layout asks for it.
+    """
+    return tensor if tensor.is_contiguous() else tensor.transpose(1, 2)
+
+
 @register_scheme("W8A8_MXFP8", "moe")
 class AscendW8A8MXFP8DynamicFusedMoEMethod(AscendMoEScheme):
     """FusedMoe method for Ascend W8A8_MXFP8."""
@@ -398,10 +412,10 @@ class AscendW8A8MXFP8DynamicFusedMoEMethod(AscendMoEScheme):
                 layer.cann_mega_moe_w2_weight_scale_list,
             ]
         return [
-            layer.w13_weight.transpose(1, 2),
-            layer.w2_weight.transpose(1, 2),
-            layer.w13_weight_scale.transpose(1, 2),
-            layer.w2_weight_scale.transpose(1, 2),
+            _flattenable_expert_view(layer.w13_weight),
+            _flattenable_expert_view(layer.w2_weight),
+            _flattenable_expert_view(layer.w13_weight_scale),
+            _flattenable_expert_view(layer.w2_weight_scale),
         ]
 
     def process_weights_after_loading(self, layer):
