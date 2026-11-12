@@ -447,6 +447,25 @@ class AscendFp8BlockFusedMoEMethod(AscendMoEScheme):
             )
         return mx_scale
 
+    @property
+    def supports_eplb(self) -> bool:
+        """Defer to whichever method serves the resolved experts.
+
+        Nothing of the block-wise layout survives weight loading: on A5 the
+        experts are rewritten to MXFP8 in place and carry MX scales, and
+        elsewhere they are resolved to the model dtype. Both of those methods
+        declare their own EPLB support, and the views EPLB rearranges are
+        already theirs, so this is their answer to give rather than a property
+        of the checkpoint's format.
+
+        Read while the layer is built, which is before
+        ``process_weights_after_loading`` can drop ``mxfp8_method`` over an
+        unaligned reduction dim. Both answers are True, so that late fallback
+        cannot invalidate one already given.
+        """
+        active = self.mxfp8_method if self.mxfp8_method is not None else self.bf16_method
+        return bool(getattr(active, "supports_eplb", False))
+
     def get_eplb_weight_views(self, layer: torch.nn.Module) -> list[torch.Tensor]:
         active = self.mxfp8_method if self.mxfp8_method is not None else self.bf16_method
         return active.get_eplb_weight_views(layer)

@@ -489,6 +489,24 @@ class TestAscendFp8BlockFusedMoEMethod(TestBase):
         self.assertEqual(result, "bf16")
         scheme._bf16_method.apply.assert_called_once()
 
+    def test_eplb_support_follows_the_mxfp8_execution_method(self):
+        # Upstream reads this while building the layer and refuses EPLB on a
+        # method that reports False, so it must be the active method's answer
+        # rather than a constant.
+        scheme = self.build_scheme(is_950=True)
+
+        scheme.mxfp8_method.supports_eplb = True
+        self.assertIs(scheme.supports_eplb, True)
+
+        scheme.mxfp8_method.supports_eplb = False
+        self.assertIs(scheme.supports_eplb, False)
+
+    def test_eplb_support_follows_the_dense_fallback(self):
+        scheme = self.build_scheme(is_950=False)
+        scheme._bf16_method = MagicMock(supports_eplb=True)
+
+        self.assertIs(scheme.supports_eplb, True)
+
 
 if __name__ == "__main__":
     unittest.main()
