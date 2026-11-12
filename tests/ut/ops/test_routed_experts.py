@@ -39,6 +39,11 @@ class _FakeNpuTensor:
     def stride(self):
         return self._stride
 
+    def view(self, *shape):
+        # The stacked path flattens every expert row; a real tensor carries
+        # enough of that for the assertions which follow the flattening.
+        return torch.empty(self.shape, dtype=self.dtype).view(*shape)
+
 
 def _routed_experts(weight_views):
     routed_experts = AscendRoutedExperts.__new__(AscendRoutedExperts)
@@ -256,6 +261,53 @@ def test_get_expert_weights_rejects_wrong_expert_tensor_list_length():
 def test_get_expert_weights_rejects_non_contiguous_view():
     with pytest.raises(ValueError, match="flattenable without a copy"):
         list(_routed_experts([torch.randn(2, 3, 4).transpose(1, 2)]).get_expert_weights())
+
+
+def _stacked_npu_weight(monkeypatch, npu_format, *, is_a5):
+    """A stacked expert weight reporting ``npu_format``, with the format queries."""
+    queried = []
+
+    def fake_get_npu_format(tensor):
+        queried.append(tensor)
+        return tensor.npu_format
+
+    monkeypatch.setattr(routed_experts_module, "is_950", lambda: is_a5)
+    monkeypatch.setattr(routed_experts_module, "is_weak_contiguous", lambda tensor: True)
+    monkeypatch.setattr(
+        routed_experts_module.torch_npu,
+        "get_npu_format",
+        fake_get_npu_format,
+        raising=False,
+    )
+    return _FakeNpuTensor((2, 3, 4), npu_format), queried
+
+
+def test_get_expert_weights_rejects_a_stacked_internal_format_on_a5(monkeypatch):
+    # Upstream would allocate the receive buffer with torch.empty_like, losing
+    # the format, and copy into offset views of this stack.
+    weight, _ = _stacked_npu_weight(monkeypatch, 29, is_a5=True)
+
+    with pytest.raises(ValueError, match="stacked expert weight left in internal format 29"):
+        list(_routed_experts([weight]).get_expert_weights())
+
+
+def test_get_expert_weights_accepts_a_stacked_nd_weight_on_a5(monkeypatch):
+    weight, _ = _stacked_npu_weight(monkeypatch, 2, is_a5=True)
+
+    views = list(_routed_experts([weight]).get_expert_weights())
+
+    assert [view.shape for view in views] == [torch.Size([2, 12])]
+
+
+def test_get_expert_weights_leaves_the_stacked_layout_alone_off_a5(monkeypatch):
+    # Only Ascend950 restricts copy_ for internal formats, so elsewhere the
+    # format is nobody's business here.
+    weight, queried = _stacked_npu_weight(monkeypatch, 29, is_a5=False)
+
+    views = list(_routed_experts([weight]).get_expert_weights())
+
+    assert [view.shape for view in views] == [torch.Size([2, 12])]
+    assert queried == []
 
 
 @pytest.mark.parametrize("use_v2_model_runner", [False, True])

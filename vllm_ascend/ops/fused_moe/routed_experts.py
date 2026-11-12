@@ -48,7 +48,7 @@ from vllm_ascend.ops.fused_moe.moe_comm_method import (
 from vllm_ascend.ops.fused_moe.moe_utils import get_moe_num_logical_experts
 from vllm_ascend.ops.fused_moe.prepare_finalize import PrepareAndFinalizeWithAllGather
 from vllm_ascend.quantization.quant_type import QuantType
-from vllm_ascend.utils import ACL_FORMAT_FRACTAL_NZ, maybe_trans_nz
+from vllm_ascend.utils import ACL_FORMAT_FRACTAL_ND, ACL_FORMAT_FRACTAL_NZ, is_950, maybe_trans_nz
 
 
 class AscendUnquantizedFusedMoEMethod(UnquantizedFusedMoEMethod):
@@ -471,6 +471,21 @@ class AscendRoutedExperts(RoutedExperts):  # type: ignore[no-redef]
                 )
             if not is_weak_contiguous(weight):
                 raise ValueError("Every Ascend EPLB weight view must be weakly contiguous.")
+            if weight.device.type == "npu" and is_950():
+                # A5 only: a stacked view cannot be rearranged while it is in
+                # an internal format, because upstream allocates the receive
+                # buffers with torch.empty_like(), which drops the format to
+                # ND here, and every per-expert destination is an offset view
+                # of the stack, which copy_ refuses for internal formats.
+                # This is observed after weight loading, so it is the one place
+                # that sees the format the experts actually ended up in.
+                stacked_format = int(torch_npu.get_npu_format(weight))
+                if stacked_format != ACL_FORMAT_FRACTAL_ND:
+                    raise ValueError(
+                        "Ascend EPLB cannot rearrange a stacked expert weight left in internal format "
+                        f"{stacked_format}. Export the experts as a per-expert tensor list, whose entries are "
+                        "each their own offset-0 allocation, or keep the weight in ND (weight_nz_mode=0)."
+                    )
             try:
                 flattened_weights.append(weight.view(self.local_num_experts, -1))
             except RuntimeError as exc:
