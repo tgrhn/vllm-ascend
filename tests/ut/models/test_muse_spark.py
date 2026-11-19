@@ -608,6 +608,7 @@ def _moe_vllm_config(
     *,
     enable_expert_parallel: bool,
     enable_eplb: bool = False,
+    num_redundant_experts: int = 0,
     data_parallel_size: int = 1,
     prefill_context_parallel_size: int = 1,
 ) -> SimpleNamespace:
@@ -631,6 +632,7 @@ def _moe_vllm_config(
         parallel_config=SimpleNamespace(
             enable_expert_parallel=enable_expert_parallel,
             enable_eplb=enable_eplb,
+            eplb_config=SimpleNamespace(num_redundant_experts=num_redundant_experts),
             use_sequence_parallel_moe=False,
             data_parallel_size=data_parallel_size,
             prefill_context_parallel_size=prefill_context_parallel_size,
@@ -729,10 +731,28 @@ def test_moe_rejects_the_fused_dispatch_mlp_combine_path():
         _build_moe(vllm_config=_moe_vllm_config(enable_expert_parallel=True), ep_world_size=2, enable_fused_mc2=1)
 
 
-def test_moe_rejects_eplb():
-    """Redundant experts would break the fixed n_redundant_experts = 0 bookkeeping."""
-    with pytest.raises(NotImplementedError, match="EPLB"):
-        _build_moe(vllm_config=_moe_vllm_config(enable_expert_parallel=True, enable_eplb=True), ep_world_size=2)
+def test_moe_passes_swap_only_eplb_to_the_expert_factory():
+    """EPLB without replicas only changes which rank owns which expert, which
+    the expert container already carries; the layer just forwards the flags."""
+    moe, kwargs = _build_moe(
+        vllm_config=_moe_vllm_config(enable_expert_parallel=True, enable_eplb=True),
+        ep_world_size=2,
+    )
+
+    assert kwargs["enable_eplb"] is True
+    assert kwargs["num_redundant_experts"] == 0
+    assert moe.n_physical_experts == moe.n_logical_experts == 4
+
+
+def test_moe_rejects_eplb_with_redundant_experts():
+    """``MuseSparkConsolidatedRoutedExperts.load_weights`` walks the checkpoint's
+    logical experts, one physical slot each, so a replica slot would never be
+    written and the experts would run on uninitialized weights."""
+    with pytest.raises(NotImplementedError, match="redundant experts"):
+        _build_moe(
+            vllm_config=_moe_vllm_config(enable_expert_parallel=True, enable_eplb=True, num_redundant_experts=2),
+            ep_world_size=2,
+        )
 
 
 @pytest.mark.parametrize("parallel_sizes", [{"data_parallel_size": 2}, {"prefill_context_parallel_size": 2}])

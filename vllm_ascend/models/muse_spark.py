@@ -45,9 +45,9 @@ and none has been run: the per-route norm is mixed into whichever Ascend MoE
 scheme the quantization description selects, and the fused QKVOGate projection
 is declared in this model's packed-module mapping so the scheme lookup can
 resolve it from the four tensors the checkpoint keeps separate. The other
-quantization configs, EPLB, sequence-parallel MoE, data or prefill context
-parallelism without expert parallelism, and the DSpark draft are not
-supported yet.
+quantization configs, EPLB with redundant experts, sequence-parallel MoE,
+data or prefill context parallelism without expert parallelism, and the
+DSpark draft are not supported yet.
 """
 
 from collections.abc import Callable
@@ -447,8 +447,20 @@ class AscendMuseSpark1xMoE(MuseSpark1xMoE):
                 "dispatch, the MLP stage and the combine into a single operator, leaving nowhere "
                 "to apply the per-expert output norm."
             )
-        if parallel_config.enable_eplb:
-            raise NotImplementedError("Muse Spark on Ascend does not support EPLB yet.")
+        # Swap-only EPLB needs nothing of this layer: the placement moves whole
+        # experts between ranks and ``AscendRoutedExperts`` carries them. Redundant
+        # replicas do: ``MuseSparkConsolidatedRoutedExperts.load_weights`` walks the
+        # checkpoint's logical experts, one physical slot each, so a replica slot
+        # would never be written and would run on uninitialized weights.
+        self.enable_eplb = parallel_config.enable_eplb
+        num_redundant_experts = parallel_config.eplb_config.num_redundant_experts
+        if self.enable_eplb and num_redundant_experts:
+            raise NotImplementedError(
+                "Muse Spark on Ascend supports EPLB only without redundant experts, got "
+                f"num_redundant_experts={num_redundant_experts}: the consolidated expert "
+                "loader fills one physical slot per logical expert, so the replicas would "
+                "run on uninitialized weights."
+            )
 
         # vLLM builds the EP group over all TP x PCP x DP ranks of every MoE
         # model; only enable_expert_parallel shards the experts across it, so
@@ -473,9 +485,10 @@ class AscendMuseSpark1xMoE(MuseSpark1xMoE):
         self.num_experts = config.num_local_experts
         self.n_routed_experts = config.num_local_experts
         self.n_logical_experts = config.num_local_experts
-        # EPLB is rejected above, so there are no redundant experts to place.
-        self.n_redundant_experts = 0
-        self.n_physical_experts = self.n_logical_experts
+        # Replicas are rejected above, so the physical count equals the logical
+        # one; EPLB only changes which rank owns which expert.
+        self.n_redundant_experts = num_redundant_experts
+        self.n_physical_experts = self.n_logical_experts + self.n_redundant_experts
         if self.n_physical_experts % self.ep_size:
             raise ValueError(
                 f"Muse Spark on Ascend needs the {self.n_physical_experts} experts to divide "
@@ -576,6 +589,8 @@ class AscendMuseSpark1xMoE(MuseSpark1xMoE):
             scoring_func=ROUTER_SCORE_NORMALIZATION,
             e_score_correction_bias=self.expert_bias,
             routed_scaling_factor=self.route_scale,
+            enable_eplb=self.enable_eplb,
+            num_redundant_experts=self.n_redundant_experts,
             routed_experts_cls=AscendMuseSparkRoutedExperts,
             runner_cls=AscendMuseSparkMoERunner,
         )
