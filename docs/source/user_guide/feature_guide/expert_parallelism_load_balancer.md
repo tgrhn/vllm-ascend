@@ -249,6 +249,15 @@ be booleans, and each field is range checked at startup.
 | `replica_search_radius` | `8` | 0–32 | Maximum distance from the greedy extra-replica budget explored at each search stage. |
 | `replica_search_beam_size` | `64` | 1–128 | Maximum unique replica-count candidates kept after each search stage. |
 | `placement_search_backtrack_limit` | `32` | 0–64 | Maximum feasible-branch reversals while constrained LPT places one candidate. `0` disables them. |
+| `placement_affinity_risk_tolerance` | `0.0` | [0, 1] | Relative rank-risk margin within which an expert is kept on a rank that already holds it instead of taking the best-scoring rank. `0` keeps the planner's existing choices; a small positive margin trades a negligible amount of balance for far fewer expert transfers per plan. |
+
+With `rank_transfer_limit` unlimited the planner rebuilds each layer's
+placement from scratch, so a replan can move most physical slots even when the
+load barely changed and the resulting balance is nearly identical.
+`placement_affinity_risk_tolerance` bounds how much balance that is allowed to
+cost. On a 16-rank layer with 400 physical experts whose load drifted by ±2%,
+raising it from `0.0` to `0.02` reduced the moved slots from 305 to 41 while
+the planned max-to-average rank risk changed from 1.2184 to 1.2185.
 
 Example:
 

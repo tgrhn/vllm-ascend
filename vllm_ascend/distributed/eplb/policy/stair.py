@@ -80,7 +80,8 @@ class StairPlan:
     imbalance_ratios: np.ndarray | None = None
 
 
-_RankChoice = tuple[float, int, float, float, float]  # risk, rank, mean, variance, variance scale
+_RankChoice = tuple[int, float, int, float, float, float]
+# affinity rank (0 keeps the expert where it is), risk, rank, mean, variance, variance scale
 _PlacementUndoState = tuple[int, int, tuple[float, float, float]]  # rank, slot, previous rank statistics
 
 
@@ -887,6 +888,7 @@ class StairEplbPolicy(AbstractEplbPolicy):
         rank_transfer_limit: int,
         cross_node_transfer_limit: int,
         backtrack_limit: int,
+        affinity_risk_tolerance: float = 0.0,
         migration_feasibility_cache: dict[tuple[tuple[int, int], ...], bool] | None = None,
     ) -> PlacementPlan | None:
         """Place replicas with deterministic covariance-aware greedy LPT.
@@ -894,7 +896,11 @@ class StairEplbPolicy(AbstractEplbPolicy):
         Mean, variance, and replica counts are ``[experts]``; covariance is
         ``[experts, experts]``. Experts are processed by descending per-replica
         risk. Each replica chooses the legal rank with the lowest updated risk,
-        breaking ties by rank ID. Each partial placement must have a source
+        except that a positive ``affinity_risk_tolerance`` lets a rank already
+        holding the expert win while its risk stays within that relative margin
+        of the best candidate. Remaining ties break by rank ID, and a zero
+        tolerance reproduces the previous ordering exactly.
+        Each partial placement must have a source
         assignment within the per-rank and cross-node limits. ``None`` means bounded
         backtracking found no legal placement. The first source-feasible choice
         is free; each accepted alternative choice consumes one backtrack.
@@ -941,6 +947,8 @@ class StairEplbPolicy(AbstractEplbPolicy):
         invalid_limits = rank_transfer_limit < -1 or rank_transfer_limit == 0 or cross_node_transfer_limit < -1
         if invalid_type or invalid_limits or backtrack_limit < 0:
             raise ValueError("STAIR transfer limits and backtrack_limit must be valid integers")
+        if not np.isfinite(affinity_risk_tolerance) or affinity_risk_tolerance < 0:
+            raise ValueError("affinity_risk_tolerance must be a non-negative finite number")
         replicas = replicas.astype(np.int64, copy=False)
         total_slots = int(replicas.sum())
         if np.any(replicas < 1) or np.any(replicas > num_ranks) or total_slots % num_ranks != 0:
@@ -1038,8 +1046,22 @@ class StairEplbPolicy(AbstractEplbPolicy):
                 updated_variances = np.maximum(updated_variances, 0.0)
                 updated_means = rank_means[rank_ids] + means[expert] / replicas[expert]
                 updated_risks = updated_means + z_score * np.sqrt(updated_variances)
+                # A rank that already holds this expert needs no transfer at
+                # all, so prefer it over a better-scoring rank while its risk
+                # stays within the configured margin of the best candidate.
+                # A zero margin disables the preference outright rather than
+                # deciding exact ties with it: ties are common while the ranks
+                # are still symmetric, so letting affinity settle them would
+                # already change which placement is selected. Keeping the old
+                # ordering there leaves this opt-in.
+                affinity_risk_ceiling = (
+                    float(updated_risks.min()) * (1.0 + affinity_risk_tolerance)
+                    if affinity_risk_tolerance > 0.0
+                    else -np.inf
+                )
                 rank_choices = sorted(
                     (
+                        0 if current_has_expert[rank_id, expert] and risk <= affinity_risk_ceiling else 1,
                         float(risk),
                         int(rank_id),
                         float(updated_mean),
@@ -1055,7 +1077,7 @@ class StairEplbPolicy(AbstractEplbPolicy):
             decision = decisions[replica_index]
             advanced = False
             while decision.next_choice < len(decision.choices):
-                _, rank_id, updated_mean, updated_variance, updated_scale = decision.choices[decision.next_choice]
+                _, _, rank_id, updated_mean, updated_variance, updated_scale = decision.choices[decision.next_choice]
                 decision.next_choice += 1
                 slot = rank_sizes[rank_id]
                 previous_state = rank_means[rank_id], rank_variances[rank_id], rank_variance_scales[rank_id]
@@ -1176,6 +1198,7 @@ class StairEplbPolicy(AbstractEplbPolicy):
                 rank_transfer_limit=config.rank_transfer_limit,
                 cross_node_transfer_limit=config.cross_node_transfer_limit,
                 backtrack_limit=config.placement_search_backtrack_limit,
+                affinity_risk_tolerance=config.placement_affinity_risk_tolerance,
                 migration_feasibility_cache=migration_feasibility_cache,
             )
             if placement is None:

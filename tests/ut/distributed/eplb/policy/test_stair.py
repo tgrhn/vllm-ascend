@@ -399,6 +399,47 @@ class TestStairLoadStatistics(unittest.TestCase):
         self.assertTrue(all(len(set(rank)) == len(rank) for rank in first.rank_expert_ids.tolist()))
         np.testing.assert_array_equal(StairEplbPolicy.placement_replica_counts(first.rank_expert_ids, 3), [2, 1, 1])
 
+    @staticmethod
+    def _affinity_placement(means, current, tolerance):
+        num_experts = len(means)
+        return StairEplbPolicy.lpt_placement(
+            np.array(means, dtype=np.float64),
+            np.zeros(num_experts),
+            np.zeros((num_experts, num_experts)),
+            np.ones(num_experts, dtype=np.int64),
+            num_ranks=len(current),
+            z_score=0.0,
+            current_rank_expert_ids=np.array(current),
+            rank_node_ids=np.zeros(len(current), dtype=np.int64),
+            rank_transfer_limit=-1,
+            cross_node_transfer_limit=-1,
+            backtrack_limit=0,
+            affinity_risk_tolerance=tolerance,
+        ).rank_expert_ids
+
+    def test_lpt_placement_affinity_keeps_a_tied_expert_on_its_rank(self):
+        # Both placements give the ranks loads {9, 10}, so the load model
+        # cannot separate them and the default picks by rank ID, moving two
+        # slots for nothing. Any positive tolerance keeps the installed one.
+        means = [5.0, 5.0, 5.0, 4.0]
+        current = [[0, 3], [1, 2]]
+
+        np.testing.assert_array_equal(self._affinity_placement(means, current, 0.0), [[0, 2], [1, 3]])
+        np.testing.assert_array_equal(self._affinity_placement(means, current, 1e-9), current)
+
+    def test_lpt_placement_affinity_respects_the_risk_margin(self):
+        # Keeping expert 2 on rank 0 costs 13 against the best rank's 11, so
+        # it is retained only once the margin covers that 18.2% gap.
+        means = [8.0, 6.0, 5.0, 5.0]
+        current = [[0, 2], [1, 3]]
+
+        np.testing.assert_array_equal(self._affinity_placement(means, current, 0.1), [[0, 3], [1, 2]])
+        np.testing.assert_array_equal(self._affinity_placement(means, current, 0.2), current)
+
+    def test_lpt_placement_rejects_negative_affinity_tolerance(self):
+        with self.assertRaises(ValueError):
+            self._affinity_placement([1.0, 1.0], [[0], [1]], -0.1)
+
     def test_lpt_placement_rejects_invalid_covariance_shape(self):
         with self.assertRaises(ValueError):
             StairEplbPolicy.lpt_placement(

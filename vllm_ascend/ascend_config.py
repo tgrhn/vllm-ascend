@@ -219,6 +219,12 @@ class StairConfig:
             after each search stage.
         placement_search_backtrack_limit: Maximum feasible-branch reversals
             while constrained LPT places one candidate. Zero disables them.
+        placement_affinity_risk_tolerance: Relative rank-risk margin within
+            which constrained LPT keeps an expert on a rank that already holds
+            it instead of taking the best-scoring rank. Zero decides exact ties
+            only and leaves the placement objective untouched; a small positive
+            margin trades a negligible amount of balance for far fewer expert
+            transfers per plan.
     """
 
     load_window_bins: int = 64
@@ -231,6 +237,7 @@ class StairConfig:
     replica_search_radius: int = 8
     replica_search_beam_size: int = 64
     placement_search_backtrack_limit: int = 32
+    placement_affinity_risk_tolerance: float = 0.0
 
     @property
     def z_score(self) -> float:
@@ -265,6 +272,10 @@ class StairConfig:
             raise ValueError("stair_config.replica_search_beam_size must be between 1 and 128")
         if not 0 <= self.placement_search_backtrack_limit <= 64:
             raise ValueError("stair_config.placement_search_backtrack_limit must be between 0 and 64")
+        if not math.isfinite(self.placement_affinity_risk_tolerance) or not (
+            0 <= self.placement_affinity_risk_tolerance <= 1
+        ):
+            raise ValueError("stair_config.placement_affinity_risk_tolerance must be between zero and one")
         return self
 
 

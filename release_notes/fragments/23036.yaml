@@ -1,0 +1,9 @@
+pr: 23036
+entries:
+  - category: feature
+    text: >-
+      Added `eplb_config.stair_config.placement_affinity_risk_tolerance`, which
+      keeps an expert on a rank that already holds it while the rank's risk stays
+      within the given relative margin of the best candidate. The default `0.0`
+      leaves planning unchanged; a small positive margin cuts the expert
+      transfers a replan issues by several times at a negligible balance cost.

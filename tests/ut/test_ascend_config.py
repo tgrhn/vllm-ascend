@@ -368,6 +368,7 @@ class TestAscendConfig(TestBase):
                 "replica_search_radius": 8,
                 "replica_search_beam_size": 64,
                 "placement_search_backtrack_limit": 32,
+                "placement_affinity_risk_tolerance": 0.0,
             },
         )
         self.assertEqual(config.stair_config.rank_transfer_limit, 2)
@@ -403,6 +404,8 @@ class TestAscendConfig(TestBase):
             {"replica_search_beam_size": 128},
             {"placement_search_backtrack_limit": 0},
             {"placement_search_backtrack_limit": 64},
+            {"placement_affinity_risk_tolerance": 0},
+            {"placement_affinity_risk_tolerance": 1},
         ):
             with self.subTest(value=value):
                 EplbConfig(stair_config=value)
@@ -427,6 +430,8 @@ class TestAscendConfig(TestBase):
             {"replica_search_beam_size": 129},
             {"placement_search_backtrack_limit": -1},
             {"placement_search_backtrack_limit": 65},
+            {"placement_affinity_risk_tolerance": -0.001},
+            {"placement_affinity_risk_tolerance": 1.001},
         ):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 EplbConfig(stair_config=value)
