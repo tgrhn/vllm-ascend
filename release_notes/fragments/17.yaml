@@ -1,0 +1,6 @@
+pr: 17
+entries:
+  - category: bugfix
+    text: >-
+      Fixed Mistral Large 4 startup failures on Ascend with DSpARK when draft
+      attention uses a sliding window or FlashMLA metadata reuse is enabled.
